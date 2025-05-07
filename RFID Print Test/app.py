@@ -6,6 +6,10 @@ import pandas as pd
 import base64
 import dash
 from dash import dash_table, html
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+
 
 MqttSubscribe.start_mqtt_thread()
 # Initialize the app
@@ -19,7 +23,8 @@ file_path = './assets/ZPL.txt'
 # Function to decode EPC
 def decode_epc(epc_base64):
     decoded_bytes = base64.b64decode(epc_base64)
-    return decoded_bytes.decode('utf-8')
+    decoded_str = decoded_bytes.decode('utf-8', errors='replace')
+    return decoded_str
 
 def extract_json_objects(string_array):
     mqtt_lines = []
@@ -35,24 +40,31 @@ def extract_json_objects(string_array):
 def getDF_From_MQTT(mqtt_lines):
     epc_table = {}
     for line in mqtt_lines:
-        data = line
-        tag_event = data["tagInventoryEvent"]
-        epc_base64 = tag_event["epc"]
-        epc_actual = decode_epc(epc_base64)
-        timestamp = data["timestamp"]
-        # If EPC already exists, update timestamp; else add new
-        if epc_actual in epc_table:
-            epc_table[epc_actual]["timestamp"] = timestamp
-        else:
-            # Copy all relevant fields and add the decoded EPC
-            entry = tag_event.copy()
-            entry["timestamp"] = timestamp
-            entry["epc_actual"] = epc_actual            
-            parts = epc_actual.split('&&')
-            if len(parts) == 2:
-                entry["part"]=parts[0]
-                entry["qty"] = parts[1]
-            epc_table[epc_actual] = entry
+        try:
+            data = line
+            tag_event = data["tagInventoryEvent"]
+            epc_base64 = tag_event["epc"]        
+            epc_actual = decode_epc(epc_base64)
+            if not epc_actual.startswith("P"):
+                continue 
+            timestamp = data["timestamp"]
+            # If EPC already exists, update timestamp; else add new
+            if epc_actual in epc_table:
+                dt_utc = datetime.fromisoformat(timestamp)
+                dt_cdt = dt_utc.astimezone(ZoneInfo('America/Chicago'))
+                epc_table[epc_actual]["timestamp"] = dt_cdt
+            else:
+                # Copy all relevant fields and add the decoded EPC
+                entry = tag_event.copy()
+                entry["timestamp"] = timestamp
+                entry["epc_actual"] = epc_actual            
+                parts = epc_actual.split('&&')
+                if len(parts) == 2:
+                    entry["part"]=parts[0]
+                    entry["qty"] = parts[1]
+                epc_table[epc_actual] = entry
+        except:
+            error = "ignore"
 
     # Convert to DataFrame for a table view
     df = pd.DataFrame(epc_table.values())
@@ -154,16 +166,16 @@ app.layout = html.Div([
 ])
 
 app.layout.children.append(
-    dcc.Interval(id='interval-component', interval=800, n_intervals=0)
+    dcc.Interval(id='interval-component', interval=500, n_intervals=0)
 )
 
 app.layout.children.append(
     html.Div([
     html.Div(id="header",children=[html.H1("Live Inventory")
-                                   ,html.Button("Clear", id='clear-button', className="button")
+                                   ,html.Button("Refresh Inventory", id='clear-button', className="button")
                                    ], style={'textAlign': 'center', 'marginTop': '20px','display':'none'}),
     html.Div(id='inventory-display', style={'textAlign': 'center', 'marginTop': '20px','display':'none','justify-content': 'center'})]
-    ,style={'textAlign': 'center', 'marginTop': '20px'})
+    ,style={'textAlign': 'center', 'marginTop': '20px','marginBottom': '120px'})
 )
 
 @app.callback(
@@ -178,7 +190,7 @@ def update_inventory_display(n):
     dash_table.DataTable(
         data=df.to_dict('records'),
         columns=[{"name": i, "id": i} for i in df.columns]
-    )])
+    )],style={'textAlign': 'center', 'marginTop': '20px','marginBottom': '120px'})
 
 @app.callback(
     Output('inventory-display', 'children',allow_duplicate=True),
